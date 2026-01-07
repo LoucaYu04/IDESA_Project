@@ -62,6 +62,8 @@ def on_blue_detected():
     print("Blue detected! Running blue function...")
     # Add your blue event code here
 
+
+aruco_path = []
 prev_color = None
 
 while True:
@@ -89,11 +91,31 @@ while True:
     gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
     corners, ids, rejected = aruco.detectMarkers(gray, aruco_dict, parameters=parameters)
 
-    # Draw detected markers
+
+    # Draw detected markers and track the first marker's path
     if ids is not None:
         aruco.drawDetectedMarkers(frame, corners, ids)
         cv2.putText(frame, f"Detected {len(ids)} marker(s)", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 1, (0,255,0), 2)
+        # Track the first marker's center
+        c = corners[0][0]  # shape (4,2)
+        center_x = int(np.mean(c[:,0]))
+        center_y = int(np.mean(c[:,1]))
+        if not aruco_path:
+            aruco_path.append((center_x, center_y))
+        else:
+            last_x, last_y = aruco_path[-1]
+            # If the marker jumps far (e.g., reappears), start a new path
+            if abs(center_x - last_x) > 100 or abs(center_y - last_y) > 100:
+                aruco_path = [(center_x, center_y)]
+            else:
+                aruco_path.append((center_x, center_y))
+        # Draw the path
+        for i in range(1, len(aruco_path)):
+            cv2.line(frame, aruco_path[i-1], aruco_path[i], (0,255,255), 2)
+        # Draw current center
+        cv2.circle(frame, (center_x, center_y), 5, (0,255,255), -1)
     else:
+        aruco_path = []
         cv2.putText(frame, "No ArUco markers detected", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 1, (0,0,255), 2)
 
     # --- Color Detection ---
