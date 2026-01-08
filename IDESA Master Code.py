@@ -47,33 +47,46 @@ if hasattr(cv2, 'CAP_PROP_WB_TEMPERATURE'):
 start_time = time.time()
 fps = 0
 
-# --- Camera Preview Loop ---
 
 # --- Functions to run for each color ---
 def on_red_detected():
     print("Red detected! Running red function...")
-    # Add your red event code here
 
 def on_green_detected():
     print("Green detected! Running green function...")
-    # Add your green event code here
 
 def on_blue_detected():
     print("Blue detected! Running blue function...")
-    # Add your blue event code here
 
+# --- ArUco Area Tracking Setup ---
+# Set your ArUco marker IDs here
+corner_ids = [2, 3, 5, 6]  # Replace with your actual corner marker IDs
+inner_ids = [1, 8]           # Replace with your actual inner marker IDs
+
+def order_corners(corners_dict):
+    # Returns corners in order: [top-left, top-right, bottom-right, bottom-left]
+    pts = np.array([corners_dict[i] for i in corner_ids])
+    s = pts.sum(axis=1)
+    diff = np.diff(pts, axis=1)
+    ordered = np.zeros((4,2), dtype=np.float32)
+    ordered[0] = pts[np.argmin(s)]      # top-left
+    ordered[2] = pts[np.argmax(s)]      # bottom-right
+    ordered[1] = pts[np.argmin(diff)]   # top-right
+    ordered[3] = pts[np.argmax(diff)]   # bottom-left
+    return ordered
 
 aruco_path = []
 prev_color = None
 
+
+# --- PHASE 1: Set the 4 corner ArUco codes ---
+corner_centers = None
 while True:
     ret, frame = cap.read()
     if not ret:
         print("Failed to grab frame from camera.")
         break
 
-
-    # --- White balance correction (Gray World Assumption) ---
     def gray_world_correction(img):
         img = img.astype(np.float32)
         avg_b = np.mean(img[:,:,0])
@@ -86,105 +99,75 @@ while True:
         return img.astype(np.uint8)
 
     frame = gray_world_correction(frame)
-
-    # Detect ArUco markers in the frame
     gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
     corners, ids, rejected = aruco.detectMarkers(gray, aruco_dict, parameters=parameters)
-
-
-    # Draw detected markers and track the first marker's path
+    marker_centers = {}
     if ids is not None:
+        ids_flat = [int(i) for i in ids.flatten()]
+        print(f"Detected marker IDs: {ids_flat}")
         aruco.drawDetectedMarkers(frame, corners, ids)
-        cv2.putText(frame, f"Detected {len(ids)} marker(s)", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 1, (0,255,0), 2)
-        # Track the first marker's center
-        c = corners[0][0]  # shape (4,2)
-        center_x = int(np.mean(c[:,0]))
-        center_y = int(np.mean(c[:,1]))
-        if not aruco_path:
-            aruco_path.append((center_x, center_y))
+        for i, marker_id in enumerate(ids_flat):
+            c = corners[i][0]
+            center = np.mean(c, axis=0)
+            marker_centers[marker_id] = center
+        # Ensure corner_ids are also int for comparison
+        if all(int(cid) in marker_centers for cid in corner_ids):
+            ordered_corners = order_corners(marker_centers)
+            cv2.polylines(frame, [np.int32(ordered_corners)], isClosed=True, color=(0,255,0), thickness=2)
+            corner_centers = ordered_corners.copy()
+            cv2.putText(frame, "Corners set! Press 'q' to continue", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 1, (0,255,0), 2)
         else:
-            last_x, last_y = aruco_path[-1]
-            # If the marker jumps far (e.g., reappears), start a new path
-            if abs(center_x - last_x) > 100 or abs(center_y - last_y) > 100:
-                aruco_path = [(center_x, center_y)]
-            else:
-                aruco_path.append((center_x, center_y))
-        # Draw the path
-        for i in range(1, len(aruco_path)):
-            cv2.line(frame, aruco_path[i-1], aruco_path[i], (0,255,255), 2)
-        # Draw current center
-        cv2.circle(frame, (center_x, center_y), 5, (0,255,255), -1)
+            cv2.putText(frame, "Show all 4 corner ArUco codes", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 1, (0,0,255), 2)
     else:
-        aruco_path = []
-        cv2.putText(frame, "No ArUco markers detected", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 1, (0,0,255), 2)
+        cv2.putText(frame, "Show all 4 corner ArUco codes", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 1, (0,0,255), 2)
 
-    # --- Color Detection ---
-    hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
-    # Red mask (two ranges for HSV wraparound)
-    lower_red1 = np.array([0, 120, 70])
-    upper_red1 = np.array([10, 255, 255])
-    lower_red2 = np.array([170, 120, 70])
-    upper_red2 = np.array([180, 255, 255])
-    mask_red = cv2.inRange(hsv, lower_red1, upper_red1) | cv2.inRange(hsv, lower_red2, upper_red2)
-
-    # Green mask
-    lower_green = np.array([36, 100, 100])
-    upper_green = np.array([86, 255, 255])
-    mask_green = cv2.inRange(hsv, lower_green, upper_green)
-
-    # Blue mask
-    lower_blue = np.array([94, 80, 2])
-    upper_blue = np.array([126, 255, 255])
-    mask_blue = cv2.inRange(hsv, lower_blue, upper_blue)
-
-
-    # Find which color is most present
-    red_count = cv2.countNonZero(mask_red)
-    green_count = cv2.countNonZero(mask_green)
-    blue_count = cv2.countNonZero(mask_blue)
-
-    color = None
-    mask = None
-    if red_count > green_count and red_count > blue_count and red_count > 500:
-        color = 'red'
-        mask = mask_red
-    elif green_count > red_count and green_count > blue_count and green_count > 500:
-        color = 'green'
-        mask = mask_green
-    elif blue_count > red_count and blue_count > green_count and blue_count > 500:
-        color = 'blue'
-        mask = mask_blue
-
-    # Draw bounding box around largest area of detected color
-    if mask is not None:
-        contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-        if contours:
-            largest_contour = max(contours, key=cv2.contourArea)
-            if cv2.contourArea(largest_contour) > 500:
-                x, y, w, h = cv2.boundingRect(largest_contour)
-                color_map = {'red': (0,0,255), 'green': (0,255,0), 'blue': (255,0,0)}
-                cv2.rectangle(frame, (x, y), (x+w, y+h), color_map[color], 3)
-
-    # Run function if color changed
-    if color and color != prev_color:
-        if color == 'red':
-            on_red_detected()
-        elif color == 'green':
-            on_green_detected()
-        elif color == 'blue':
-            on_blue_detected()
-        prev_color = color
-
-    # Show which color is detected
-    if color:
-        cv2.putText(frame, f"{color.capitalize()} detected", (10, 70), cv2.FONT_HERSHEY_SIMPLEX, 1, (255,255,255), 2)
-    else:
-        cv2.putText(frame, "No color detected", (10, 70), cv2.FONT_HERSHEY_SIMPLEX, 1, (255,255,255), 2)
-
-    cv2.imshow("Frame", frame)
-    # Press 'q' to quit the preview
+    cv2.imshow("Set Corners", frame)
     if cv2.waitKey(1) & 0xFF == ord('q'):
         break
+
+# --- PHASE 2: Live tracking with fixed corners ---
+if corner_centers is not None:
+    while True:
+        ret, frame = cap.read()
+        if not ret:
+            print("Failed to grab frame from camera.")
+            break
+        frame = gray_world_correction(frame)
+        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+        corners, ids, rejected = aruco.detectMarkers(gray, aruco_dict, parameters=parameters)
+        marker_centers = {}
+        if ids is not None:
+            ids_flat = ids.flatten()
+            aruco.drawDetectedMarkers(frame, corners, ids)
+            for i, marker_id in enumerate(ids_flat):
+                c = corners[i][0]
+                center = np.mean(c, axis=0)
+                marker_centers[marker_id] = center
+            # Draw the fixed area
+            cv2.polylines(frame, [np.int32(corner_centers)], isClosed=True, color=(0,255,0), thickness=2)
+            dst_pts = np.array([[0,0],[1,0],[1,1],[0,1]], dtype=np.float32)
+            H, _ = cv2.findHomography(corner_centers, dst_pts)
+            # Prepare data for Simulink
+            inner_positions = {}
+            for iid in inner_ids:
+                if iid in marker_centers:
+                    pt = np.array([*marker_centers[iid], 1.0])
+                    mapped = H @ pt
+                    mapped /= mapped[2]
+                    x, y = mapped[0], mapped[1]
+                    inner_positions[iid] = (x, y)
+                    cv2.circle(frame, tuple(np.int32(marker_centers[iid])), 8, (0,0,255), -1)
+                    cv2.putText(frame, f"({x:.2f}, {y:.2f})", tuple(np.int32(marker_centers[iid]+10)), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0,0,255), 2)
+            # Send positions to Simulink if both are found
+            if len(inner_positions) == 2:
+                # Format: "id1,x1,y1;id2,x2,y2"
+                msg = ";".join([f"{iid},{inner_positions[iid][0]:.4f},{inner_positions[iid][1]:.4f}" for iid in inner_ids])
+                sock_send.sendto(msg.encode(), (UDP_IP_SEND, UDP_PORT))
+        else:
+            cv2.polylines(frame, [np.int32(corner_centers)], isClosed=True, color=(0,255,0), thickness=2)
+        cv2.imshow("Live Tracking", frame)
+        if cv2.waitKey(1) & 0xFF == ord('q'):
+            break
 
 cap.release()
 cv2.destroyAllWindows()
