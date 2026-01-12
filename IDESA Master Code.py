@@ -206,7 +206,7 @@ if corner_centers is not None:
                         cv2.putText(frame, f"Ball ({x_norm:.2f}, {y_norm:.2f})", (center_ball[0]+10, center_ball[1]), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0,0,255), 2)
                         # Send ball position to Simulink
                         msg = f"ball,{x_norm:.4f},{y_norm:.4f};" + ";".join([f"{iid},{inner_positions[iid][0]:.4f},{inner_positions[iid][1]:.4f}" for iid in inner_ids])
-                        sock_send.sendto(msg.encode(), (UDP_IP_SEND, UDP_PORT))
+                        # sock_send.sendto(msg.encode(), (UDP_IP_SEND, UDP_PORT))
                     else:
                         # If no ball, just send ArUco positions
                         msg = ";".join([f"{iid},{inner_positions[iid][0]:.4f},{inner_positions[iid][1]:.4f}" for iid in inner_ids])
