@@ -158,11 +158,63 @@ if corner_centers is not None:
                     inner_positions[iid] = (x, y)
                     cv2.circle(frame, tuple(np.int32(marker_centers[iid])), 8, (0,0,255), -1)
                     cv2.putText(frame, f"({x:.2f}, {y:.2f})", tuple(np.int32(marker_centers[iid]+10)), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0,0,255), 2)
-            # Send positions to Simulink if both are found
+
+            # --- Red Ball Detection and Tracking ---
+            ball_position = None
+            # Persistent path for the red ball
+            if 'ball_path' not in globals():
+                ball_path = []
+            # Only track if both ArUco markers are found
             if len(inner_positions) == 2:
-                # Format: "id1,x1,y1;id2,x2,y2"
-                msg = ";".join([f"{iid},{inner_positions[iid][0]:.4f},{inner_positions[iid][1]:.4f}" for iid in inner_ids])
-                sock_send.sendto(msg.encode(), (UDP_IP_SEND, UDP_PORT))
+                # Find red ball in the frame
+                hsv_ball = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
+                lower_red1 = np.array([0, 120, 70])
+                upper_red1 = np.array([10, 255, 255])
+                lower_red2 = np.array([170, 120, 70])
+                upper_red2 = np.array([180, 255, 255])
+                mask_red = cv2.inRange(hsv_ball, lower_red1, upper_red1) | cv2.inRange(hsv_ball, lower_red2, upper_red2)
+                # Morphological operations to clean up mask
+                mask_red = cv2.medianBlur(mask_red, 7)
+                contours, _ = cv2.findContours(mask_red, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+                if contours:
+                    largest_contour = max(contours, key=cv2.contourArea)
+                    if cv2.contourArea(largest_contour) > 100:
+                        (x_ball, y_ball), radius = cv2.minEnclosingCircle(largest_contour)
+                        center_ball = (int(x_ball), int(y_ball))
+                        ball_position = center_ball
+                        # --- Ball path tracking ---
+                        ball_path.append(center_ball)
+                        if len(ball_path) > 1000:
+                            ball_path = ball_path[-1000:]
+                        # Draw the path
+                        if len(ball_path) > 1:
+                            cv2.polylines(frame, [np.array(ball_path, dtype=np.int32)], False, (0,0,255), 2)
+                        # Draw direction arrow
+                        if len(ball_path) > 5:
+                            pt1 = ball_path[-6]
+                            pt2 = ball_path[-1]
+                            cv2.arrowedLine(frame, pt1, pt2, (0,255,255), 3, tipLength=0.3)
+                        # Draw ball and lines to ArUco markers
+                        cv2.circle(frame, center_ball, int(radius), (0,0,255), 2)
+                        for iid in inner_ids:
+                            cv2.line(frame, center_ball, tuple(np.int32(marker_centers[iid])), (0,0,255), 2)
+                        # Map ball position to normalized coordinates
+                        pt_ball = np.array([x_ball, y_ball, 1.0])
+                        mapped_ball = H @ pt_ball
+                        mapped_ball /= mapped_ball[2]
+                        x_norm, y_norm = mapped_ball[0], mapped_ball[1]
+                        cv2.putText(frame, f"Ball ({x_norm:.2f}, {y_norm:.2f})", (center_ball[0]+10, center_ball[1]), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0,0,255), 2)
+                        # Send ball position to Simulink
+                        msg = f"ball,{x_norm:.4f},{y_norm:.4f};" + ";".join([f"{iid},{inner_positions[iid][0]:.4f},{inner_positions[iid][1]:.4f}" for iid in inner_ids])
+                        sock_send.sendto(msg.encode(), (UDP_IP_SEND, UDP_PORT))
+                    else:
+                        # If no ball, just send ArUco positions
+                        msg = ";".join([f"{iid},{inner_positions[iid][0]:.4f},{inner_positions[iid][1]:.4f}" for iid in inner_ids])
+                       # sock_send.sendto(msg.encode(), (UDP_IP_SEND, UDP_PORT))
+                else:
+                    # If no ball, just send ArUco positions
+                    msg = ";".join([f"{iid},{inner_positions[iid][0]:.4f},{inner_positions[iid][1]:.4f}" for iid in inner_ids])
+                   # sock_send.sendto(msg.encode(), (UDP_IP_SEND, UDP_PORT))
         else:
             cv2.polylines(frame, [np.int32(corner_centers)], isClosed=True, color=(0,255,0), thickness=2)
         cv2.imshow("Live Tracking", frame)
