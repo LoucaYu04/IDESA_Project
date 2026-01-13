@@ -4,6 +4,7 @@ import numpy as np
 import time
 import socket
 import math
+import time
 
 #Setup UDP communication parameters
 UDP_IP_SEND = "138.38.228.99"
@@ -171,135 +172,111 @@ if corner_centers is not None:
             # --- Red Ball Detection and Tracking ---
             ball_position = None
             if 'ball_path_warped' not in globals():
-                ball_path_warped = []
+                ball_path_warped = []  # List of (point, timestamp)
+            PATH_DURATION = 2.0  # seconds to keep in path
             # Only track if both ArUco markers are found
             if len(inner_positions) == 2:
-                # Find red ball in the warped image
-                hsv_ball = cv2.cvtColor(warped, cv2.COLOR_BGR2HSV)
-                lower_red1 = np.array([0, 120, 70])
-                upper_red1 = np.array([10, 255, 255])
-                lower_red2 = np.array([170, 120, 70])
-                upper_red2 = np.array([180, 255, 255])
-                mask_red = cv2.inRange(hsv_ball, lower_red1, upper_red1) | cv2.inRange(hsv_ball, lower_red2, upper_red2)
-                mask_red = cv2.medianBlur(mask_red, 7)
-                contours, _ = cv2.findContours(mask_red, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-                if contours:
-                    # Find the largest contour above a minimum area
-                    min_area = 100
-                    largest_contour = None
-                    largest_area = 0
-                    for cnt in contours:
-                        area = cv2.contourArea(cnt)
-                        if area > min_area and area > largest_area:
-                            largest_area = area
-                            largest_contour = cnt
-                    if largest_contour is not None:
-                        (x_ball, y_ball), radius = cv2.minEnclosingCircle(largest_contour)
-                        center_ball = (int(x_ball), int(y_ball))
-                        ball_position = center_ball
-                        # --- Ball path tracking ---
-                        ball_path_warped.append(center_ball)
-                        if len(ball_path_warped) > 1000:
-                            ball_path_warped = ball_path_warped[-1000:]
-                        # Draw the path
-                        if len(ball_path_warped) > 1:
-                            cv2.polylines(warped, [np.array(ball_path_warped, dtype=np.int32)], False, (0,0,255), 2)
-                        # Draw major direction arrow (last major direction of travel)
-                        major_window = 20
-                        if len(ball_path_warped) > major_window:
-                            pt1 = ball_path_warped[-major_window]
-                            pt2 = ball_path_warped[-1]
-                            major_vec = np.array(pt2) - np.array(pt1)
-                            if np.linalg.norm(major_vec) > 10:  # Only draw if significant movement
-                                cv2.arrowedLine(warped, pt1, pt2, (0,255,255), 3, tipLength=0.3)
-                        elif len(ball_path_warped) > 5:
-                            pt1 = ball_path_warped[0]
-                            pt2 = ball_path_warped[-1]
-                            major_vec = np.array(pt2) - np.array(pt1)
-                            if np.linalg.norm(major_vec) > 10:
-                                cv2.arrowedLine(warped, pt1, pt2, (0,255,255), 3, tipLength=0.3)
-                        # Draw ball and lines to ArUco markers
-                        cv2.circle(warped, center_ball, int(radius), (0,0,255), 2)
-                        for iid in inner_ids:
-                            if iid in marker_centers:
-                                cv2.line(warped, center_ball, tuple(np.int32(marker_centers[iid])), (0,0,255), 2)
-                        # Map ball position to normalized coordinates
-                        x_norm, y_norm = x_ball / WARP_W, y_ball / WARP_H
-                        cv2.putText(warped, f"Ball ({x_norm:.2f}, {y_norm:.2f})", (center_ball[0]+10, center_ball[1]), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0,0,255), 2)
-
-                        # --- Tangent arc calculation ---
-                        # Use last segment of ball path for direction
-                        if len(ball_path_warped) > 5:
-                            # Use major direction for arc calculation
-                            if len(ball_path_warped) > major_window:
-                                ball_dir = np.array(ball_path_warped[-1]) - np.array(ball_path_warped[-major_window])
-                            else:
-                                ball_dir = np.array(ball_path_warped[-1]) - np.array(ball_path_warped[0])
-                            if np.linalg.norm(ball_dir) < 1e-3:
-                                ball_dir = np.array([1.0, 0.0])
-                            else:
-                                ball_dir = ball_dir / (np.linalg.norm(ball_dir) + 1e-8)
-                        else:
-                            ball_dir = np.array([1.0, 0.0])
-                        # --- Arc update threshold logic ---
-                        if 'last_arc_start' not in globals():
-                            last_arc_start = None
-                        arc_update_threshold = 20  # pixels
-                        ball_pos = np.array([x_ball, y_ball])
-                        update_arc = False
-                        if last_arc_start is None:
-                            update_arc = True
-                        else:
-                            if np.linalg.norm(ball_pos - last_arc_start) > arc_update_threshold:
-                                update_arc = True
-                        if update_arc:
-                            last_arc_start = ball_pos.copy()
-                            # Choose target ArUco marker (e.g., inner_ids[0])
-                            target_id = inner_ids[0]
-                            if target_id in marker_centers:
-                                target_pos = np.array(marker_centers[target_id])
-                                # Calculate tangent circle center and radius
-                                def tangent_circle(ball_pos, ball_dir, target_pos):
-                                    perp1 = np.array([-ball_dir[1], ball_dir[0]])
-                                    perp2 = -perp1
-                                    results = []
-                                    for perp in [perp1, perp2]:
-                                        d = target_pos - ball_pos
-                                        denom = 2 * np.dot(d, perp)
-                                        if abs(denom) > 1e-6:
-                                            r = np.dot(d, d) / denom
-                                            center = ball_pos + perp * r
-                                            results.append((center, abs(r)))
-                                    if results:
-                                        results = [res for res in results if res[1] > 0]
-                                        if results:
-                                            return min(results, key=lambda x: x[1])
-                                    return (np.array([np.nan, np.nan]), np.nan)
-                                circle_center, circle_radius = tangent_circle(ball_pos, ball_dir, target_pos)
-                                def angle_between(center, pt):
-                                    return math.atan2(pt[1]-center[1], pt[0]-center[0])
-                                angle1 = angle_between(circle_center, ball_pos)
-                                angle2 = angle_between(circle_center, target_pos)
-                                arc_angle = abs(angle2 - angle1)
-                                arc_angle = min(arc_angle, 2*math.pi - arc_angle)
-                                arc_length = abs(circle_radius * arc_angle)
-                                # Draw circle
-                                if not np.isnan(circle_center[0]):
-                                    cv2.circle(warped, tuple(np.int32(circle_center)), int(circle_radius), (255,0,0), 1)
-                                # Send ball position, arc length, and radius to Simulink
-                                msg = f"ball,{x_norm:.4f},{y_norm:.4f};arc_length,{arc_length:.4f};arc_radius,{circle_radius:.4f};" + \
-                                    ";".join([f"{iid},{inner_positions[iid][0]:.4f},{inner_positions[iid][1]:.4f}" for iid in inner_ids])
-                                # sock_send.sendto(msg.encode(), (UDP_IP_SEND, UDP_PORT))
-                        # Always draw the last arc circle if available
-                            if last_arc_center is not None and last_arc_radius is not None:
-                                if not np.isnan(last_arc_center[0]):
-                                    cv2.circle(warped, tuple(np.int32(last_arc_center)), int(last_arc_radius), (255,0,0), 1)
+                # --- Blue Line Detection and Arc Calculation ---
+                hsv_img = cv2.cvtColor(warped, cv2.COLOR_BGR2HSV)
+                lower_blue = np.array([100, 120, 70])
+                upper_blue = np.array([130, 255, 255])
+                mask_blue = cv2.inRange(hsv_img, lower_blue, upper_blue)
+                lines = cv2.HoughLinesP(mask_blue, 1, np.pi/180, threshold=20, minLineLength=40, maxLineGap=15)
+                if lines is not None:
+                    # Pick the longest line as the direction
+                    longest = max(lines, key=lambda l: np.linalg.norm([l[0][2]-l[0][0], l[0][3]-l[0][1]]))
+                    xA, yA, xB, yB = longest[0]
+                    # Draw the blue line on the main image for visualization
+                    cv2.line(warped, (xA, yA), (xB, yB), (255,0,0), 3)
+                    # Use the midpoint as the 'ball' position
+                    x_ball = (xA + xB) / 2
+                    y_ball = (yA + yB) / 2
+                    center_ball = (int(x_ball), int(y_ball))
+                    ball_position = center_ball
+                    blue_dir = np.array([xB-xA, yB-yA], dtype=np.float32)
+                    if np.linalg.norm(blue_dir) > 1e-3:
+                        blue_dir = blue_dir / np.linalg.norm(blue_dir)
+                    # --- Ball path tracking ---
+                    now = time.time()
+                    ball_path_warped.append((center_ball, now))
+                    # Remove points older than PATH_DURATION seconds
+                    ball_path_warped = [(pt, t) for pt, t in ball_path_warped if now - t <= PATH_DURATION]
+                    # Draw the path (only recent points)
+                    if len(ball_path_warped) > 1:
+                        pts = np.array([pt for pt, t in ball_path_warped], dtype=np.int32)
+                        cv2.polylines(warped, [pts], False, (0,0,255), 2)
+                    # Draw major direction arrow (from recent path)
+                    major_window = min(20, len(ball_path_warped)-1)
+                    if major_window > 2:
+                        pt1 = ball_path_warped[-major_window][0]
+                        pt2 = ball_path_warped[-1][0]
+                        major_vec = np.array(pt2) - np.array(pt1)
+                        if np.linalg.norm(major_vec) > 10:
+                            cv2.arrowedLine(warped, tuple(pt1), tuple(pt2), (0,255,255), 3, tipLength=0.3)
+                    # Draw lines to ArUco markers
+                    for iid in inner_ids:
+                        if iid in marker_centers:
+                            cv2.line(warped, center_ball, tuple(np.int32(marker_centers[iid])), (0,0,255), 2)
+                    # Map ball position to normalized coordinates
+                    x_norm, y_norm = x_ball / WARP_W, y_ball / WARP_H
+                    cv2.putText(warped, f"Ball ({x_norm:.2f}, {y_norm:.2f})", (center_ball[0]+10, center_ball[1]), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0,0,255), 2)
+                    # --- Tangent arc calculation ---
+                    ball_dir = blue_dir
+                    # --- Arc update threshold logic ---
+                    if 'last_arc_start' not in globals():
+                        last_arc_start = None
+                    arc_update_threshold = 20  # pixels
+                    ball_pos = np.array([x_ball, y_ball])
+                    update_arc = False
+                    if last_arc_start is None:
+                        update_arc = True
                     else:
-                        # If no ball, just send ArUco positions
-                        msg = ";".join([f"{iid},{inner_positions[iid][0]:.4f},{inner_positions[iid][1]:.4f}" for iid in inner_ids])
-                        # sock_send.sendto(msg.encode(), (UDP_IP_SEND, UDP_PORT))
+                        if np.linalg.norm(ball_pos - last_arc_start) > arc_update_threshold:
+                            update_arc = True
+                    if update_arc:
+                        last_arc_start = ball_pos.copy()
+                        # Choose target ArUco marker (e.g., inner_ids[0])
+                        target_id = inner_ids[0]
+                        if target_id in marker_centers:
+                            target_pos = np.array(marker_centers[target_id])
+                            # Calculate tangent circle center and radius
+                            def tangent_circle(ball_pos, ball_dir, target_pos):
+                                perp1 = np.array([-ball_dir[1], ball_dir[0]])
+                                perp2 = -perp1
+                                results = []
+                                for perp in [perp1, perp2]:
+                                    d = target_pos - ball_pos
+                                    denom = 2 * np.dot(d, perp)
+                                    if abs(denom) > 1e-6:
+                                        r = np.dot(d, d) / denom
+                                        center = ball_pos + perp * r
+                                        results.append((center, abs(r)))
+                                if results:
+                                    results = [res for res in results if res[1] > 0]
+                                    if results:
+                                        return min(results, key=lambda x: x[1])
+                                return (np.array([np.nan, np.nan]), np.nan)
+                            circle_center, circle_radius = tangent_circle(ball_pos, ball_dir, target_pos)
+                            def angle_between(center, pt):
+                                return math.atan2(pt[1]-center[1], pt[0]-center[0])
+                            angle1 = angle_between(circle_center, ball_pos)
+                            angle2 = angle_between(circle_center, target_pos)
+                            arc_angle = abs(angle2 - angle1)
+                            arc_angle = min(arc_angle, 2*math.pi - arc_angle)
+                            arc_length = abs(circle_radius * arc_angle)
+                            # Draw circle
+                            if not np.isnan(circle_center[0]):
+                                cv2.circle(warped, tuple(np.int32(circle_center)), int(circle_radius), (255,0,0), 1)
+                            # Send ball position, arc length, and radius to Simulink
+                            msg = f"ball,{x_norm:.4f},{y_norm:.4f};arc_length,{arc_length:.4f};arc_radius,{circle_radius:.4f};" + \
+                                ";".join([f"{iid},{inner_positions[iid][0]:.4f},{inner_positions[iid][1]:.4f}" for iid in inner_ids])
+                            # sock_send.sendto(msg.encode(), (UDP_IP_SEND, UDP_PORT))
+                    # Always draw the last arc circle if available
+                    if last_arc_center is not None and last_arc_radius is not None:
+                        if not np.isnan(last_arc_center[0]):
+                            cv2.circle(warped, tuple(np.int32(last_arc_center)), int(last_arc_radius), (255,0,0), 1)
                 else:
-                    # If no ball, just send ArUco positions
+                    # If no blue line, just send ArUco positions
                     msg = ";".join([f"{iid},{inner_positions[iid][0]:.4f},{inner_positions[iid][1]:.4f}" for iid in inner_ids])
                     # sock_send.sendto(msg.encode(), (UDP_IP_SEND, UDP_PORT))
         else:
