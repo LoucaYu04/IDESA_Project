@@ -282,6 +282,32 @@ if corner_centers is not None:
                     msg = f"ball,{x_norm:.4f},{y_norm:.4f};arc_radius,{last_arc_radius if last_arc_radius is not None else 0:.4f};" + \
                         ";".join([f"{iid},{inner_positions[iid][0]:.4f},{inner_positions[iid][1]:.4f}" for iid in inner_ids])
                     # sock_send.sendto(msg.encode(), (UDP_IP_SEND, UDP_PORT))
+                    # --- Calculate distance and arc angle to target ArUco marker ---
+                    if last_arc_center is not None and last_arc_radius is not None and ball_position is not None and target_id in marker_centers:
+                        # Distance from ball to target marker
+                        target_pos = np.array(marker_centers[target_id])
+                        ball_pos = np.array(ball_position)
+                        distance = np.linalg.norm(target_pos - ball_pos)
+                        # Convert distance to steps (user input required)
+                        MOTOR_STEP_MM = 5  # Example: 5mm per step (change as needed)
+                        steps = int(distance / MOTOR_STEP_MM)
+                        # Arc angle in degrees
+                        if last_arc_center is not None:
+                            def angle_between(center, pt):
+                                return math.atan2(pt[1]-center[1], pt[0]-center[0])
+                            angle1 = angle_between(last_arc_center, ball_pos)
+                            angle2 = angle_between(last_arc_center, target_pos)
+                            arc_angle_rad = abs(angle2 - angle1)
+                            arc_angle_rad = min(arc_angle_rad, 2*math.pi - arc_angle_rad)
+                            arc_angle_deg = int(np.degrees(arc_angle_rad))
+                        else:
+                            arc_angle_deg = 0
+                        # Prepare int8 array for UDP
+                        steps_int8 = np.clip(steps, -128, 127)
+                        angle_int8 = np.clip(arc_angle_deg, -128, 127)
+                        udp_array = np.array([steps_int8, angle_int8], dtype=np.int8)
+                        #sock_send.sendto(udp_array.tobytes(), (UDP_IP_SEND, UDP_PORT))
+                        print(f"[UDP] Sent steps: {steps_int8}, angle: {angle_int8}")
         else:
             cv2.polylines(warped, [np.int32(dst_rect)], isClosed=True, color=(0,255,0), thickness=2)
         cv2.imshow("Live Tracking", warped)
