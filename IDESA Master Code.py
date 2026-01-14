@@ -26,7 +26,7 @@ CM=camera_calibration['CM'] #camera matrix
 dist_coef=camera_calibration['dist_coef']# distortion coefficients from the camera
 
 # Define the ArUco dictionary and parameters
-marker_size = 83
+marker_size = 95
 aruco_dict = aruco.getPredefinedDictionary(aruco.DICT_4X4_50)
 parameters = aruco.DetectorParameters()
 
@@ -61,8 +61,8 @@ def on_blue_detected():
 
 # --- ArUco Area Tracking Setup ---
 # Set your ArUco marker IDs here
-corner_ids = [2, 5, 6, 8]  # Replace with your actual corner marker IDs
-inner_ids = [1, 0]           # Replace with your actual inner marker IDs
+corner_ids = [0, 1, 2, 3]  # Replace with your actual corner marker IDs
+inner_ids = [4, 5]           # Replace with your actual inner marker IDs
 
 def order_corners(corners_dict):
     # Returns corners in order: [top-left, top-right, bottom-right, bottom-left]
@@ -223,18 +223,17 @@ if corner_centers is not None:
                     # --- Tangent arc calculation ---
                     ball_dir = blue_dir
                     # --- Arc update threshold logic ---
-                    if 'last_arc_start' not in globals():
-                        last_arc_start = None
+                    circle_center = None
+                    circle_radius = None
+                    if 'last_arc_center' not in globals():
+                        last_arc_center = None
+                        last_arc_radius = None
                     arc_update_threshold = 20  # pixels
                     ball_pos = np.array([x_ball, y_ball])
                     update_arc = False
-                    if last_arc_start is None:
-                        update_arc = True
-                    else:
-                        if np.linalg.norm(ball_pos - last_arc_start) > arc_update_threshold:
-                            update_arc = True
-                    if update_arc:
-                        last_arc_start = ball_pos.copy()
+                    # Only calculate arc if both inner markers are found
+                    # and the tangent_circle function is available
+                    if len(inner_positions) == 2:
                         # Choose target ArUco marker (e.g., inner_ids[0])
                         target_id = inner_ids[0]
                         if target_id in marker_centers:
@@ -257,27 +256,31 @@ if corner_centers is not None:
                                         return min(results, key=lambda x: x[1])
                                 return (np.array([np.nan, np.nan]), np.nan)
                             circle_center, circle_radius = tangent_circle(ball_pos, ball_dir, target_pos)
-                            def angle_between(center, pt):
-                                return math.atan2(pt[1]-center[1], pt[0]-center[0])
-                            angle1 = angle_between(circle_center, ball_pos)
-                            angle2 = angle_between(circle_center, target_pos)
-                            arc_angle = abs(angle2 - angle1)
-                            arc_angle = min(arc_angle, 2*math.pi - arc_angle)
-                            arc_length = abs(circle_radius * arc_angle)
-                            # Draw circle
-                            if not np.isnan(circle_center[0]):
-                                cv2.circle(warped, tuple(np.int32(circle_center)), int(circle_radius), (255,0,0), 1)
-                            # Send ball position, arc length, and radius to Simulink
-                            msg = f"ball,{x_norm:.4f},{y_norm:.4f};arc_length,{arc_length:.4f};arc_radius,{circle_radius:.4f};" + \
-                                ";".join([f"{iid},{inner_positions[iid][0]:.4f},{inner_positions[iid][1]:.4f}" for iid in inner_ids])
-                            # sock_send.sendto(msg.encode(), (UDP_IP_SEND, UDP_PORT))
-                    # Always draw the last arc circle if available
+                    # Only update arc if circle_center and circle_radius are valid
+                    if circle_center is not None and not np.isnan(circle_center[0]) and not np.isnan(circle_radius):
+                        if last_arc_center is None or last_arc_radius is None:
+                            update_arc = True
+                        else:
+                            center_diff = np.linalg.norm(circle_center - last_arc_center)
+                            radius_diff = abs(circle_radius - last_arc_radius)
+                            if center_diff > arc_update_threshold or radius_diff > arc_update_threshold:
+                                update_arc = True
+                        if update_arc:
+                            # Smooth transition (moving average)
+                            if last_arc_center is not None and last_arc_radius is not None:
+                                alpha = 0.3  # smoothing factor
+                                last_arc_center = (1 - alpha) * last_arc_center + alpha * circle_center
+                                last_arc_radius = (1 - alpha) * last_arc_radius + alpha * circle_radius
+                            else:
+                                last_arc_center = circle_center.copy()
+                                last_arc_radius = circle_radius
+                    # Draw the arc (always draw the last one)
                     if last_arc_center is not None and last_arc_radius is not None:
                         if not np.isnan(last_arc_center[0]):
                             cv2.circle(warped, tuple(np.int32(last_arc_center)), int(last_arc_radius), (255,0,0), 1)
-                else:
-                    # If no blue line, just send ArUco positions
-                    msg = ";".join([f"{iid},{inner_positions[iid][0]:.4f},{inner_positions[iid][1]:.4f}" for iid in inner_ids])
+                    # Send ball position, arc length, and radius to Simulink
+                    msg = f"ball,{x_norm:.4f},{y_norm:.4f};arc_radius,{last_arc_radius if last_arc_radius is not None else 0:.4f};" + \
+                        ";".join([f"{iid},{inner_positions[iid][0]:.4f},{inner_positions[iid][1]:.4f}" for iid in inner_ids])
                     # sock_send.sendto(msg.encode(), (UDP_IP_SEND, UDP_PORT))
         else:
             cv2.polylines(warped, [np.int32(dst_rect)], isClosed=True, color=(0,255,0), thickness=2)

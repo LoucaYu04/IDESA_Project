@@ -2,6 +2,8 @@ import cv2
 import numpy as np
 import socket
 import time
+import tkinter as tk
+from tkinter import messagebox
 
 # --- UDP Setup ---
 UDP_IP_SEND = "138.38.228.211"
@@ -9,8 +11,9 @@ UDP_IP_RECEIVE = "172.26.109.96" #LOUCA'S LAPTOP IP
 UDP_PORT = 25000
 sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
 
+'''
 # --- Camera Setup ---
-cap = cv2.VideoCapture(15)  # Use 0 or the correct index for Arducam
+cap = cv2.VideoCapture(1)  # Use 0 or the correct index for Arducam
 # Disable auto white balance and set manual white balance if supported
 cap.set(cv2.CAP_PROP_AUTO_WB, 0)
 cap.set(cv2.CAP_PROP_WB_TEMPERATURE, 4000)  # You can adjust this value for your lighting
@@ -123,3 +126,48 @@ while True:
 
 cap.release()
 cv2.destroyAllWindows()
+'''
+
+root = tk.Tk()
+root.title("Mars Robot Color Signal Sender")
+root.geometry("400x320")
+root.configure(bg="#1a1a2e")
+
+label = tk.Label(root, text="Send Robot Color Signal to Mars", font=("Arial", 16, "bold"), fg="#f5f6fa", bg="#1a1a2e")
+label.pack(pady=25)
+
+btn_green = tk.Button(root, text="Send GREEN Signal", width=20, height=2, bg="#21e675", fg="#222", font=("Arial", 12, "bold"), activebackground="#16a34a", activeforeground="#fff", command=lambda: send_udp_for_color("Green"))
+btn_green.pack(pady=10)
+
+btn_blue = tk.Button(root, text="Send BLUE Signal", width=20, height=2, bg="#3a7bd5", fg="#fff", font=("Arial", 12, "bold"), activebackground="#27408b", activeforeground="#fff", command=lambda: send_udp_for_color("Blue"))
+btn_blue.pack(pady=10)
+
+btn_red = tk.Button(root, text="Send RED Signal", width=20, height=2, bg="#e94560", fg="#fff", font=("Arial", 12, "bold"), activebackground="#b22234", activeforeground="#fff", command=lambda: send_udp_for_color("Red"))
+btn_red.pack(pady=10)
+
+# Add a color box to show the last sent color
+color_box = tk.Label(root, text="", width=20, height=2, bg="#444", relief="ridge", bd=3)
+color_box.pack(pady=10)
+
+# --- UI for color selection ---
+def send_udp_for_color(color_name):
+    if color_name == "Green":
+        msg = bytes([1])
+        print("[UDP] Sending: 1 (Green)")
+        color_box.config(bg="#21e675")
+    elif color_name == "Blue":
+        msg = bytes([2])
+        print("[UDP] Sending: 2 (Blue)")
+        color_box.config(bg="#3a7bd5")
+    elif color_name == "Red":
+        msg = bytes([3])
+        print("[UDP] Sending: 3 (Red)")
+        color_box.config(bg="#e94560")
+    else:
+        return
+    sock.sendto(msg, (UDP_IP_SEND, UDP_PORT))
+
+footer = tk.Label(root, text="Mission Control: Mars Signal Uplink", font=("Arial", 10, "italic"), fg="#aaa", bg="#1a1a2e")
+footer.pack(side="bottom", pady=10)
+
+root.mainloop()
