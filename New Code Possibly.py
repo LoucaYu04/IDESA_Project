@@ -6,17 +6,15 @@ import socket
 import math
 import time
 
-#Setup UDP communication parameters
-UDP_IP_SEND = "138.38.228.99"
-UDP_IP_RECEIVE = "172.26.109.96" #LOUCA'S LAPTOP IP
-UDP_PORT = 25000
 
-""" # Create separate sockets for sending and receiving
+# Setup UDP communication parameters
+UDP_IP_SEND = "138.38.227.25"
+UDP_IP_RECEIVE = "172.26.109.96"  # LOUCA'S LAPTOP IP
+UDP_PORT = 1738
+
+# Create separate sockets for sending and receiving
 sock_send = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-sock_recv = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-sock_recv.bind((UDP_IP_RECEIVE, UDP_PORT))
-sock_recv.setblocking(False)  # Non-blocking mode
-print("Listening on IP:", UDP_IP_RECEIVE, "Port:", UDP_PORT) """
+print("Listening on IP:", UDP_IP_RECEIVE, "Port:", UDP_PORT)
 
 
                     #------CAMERA CALIBRATION------
@@ -149,11 +147,10 @@ if corner_centers is not None:
             print("Failed to grab frame from camera.")
             break
         frame = gray_world_correction(frame)
-        # Perspective transform to crop to the area
-        H_warp, _ = cv2.findHomography(corner_centers, dst_rect)
-        warped = cv2.warpPerspective(frame, H_warp, (WARP_W, WARP_H))
-        # Detect ArUco markers in the original frame for position mapping
-        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+        # Use the full camera frame for the tracking window (no perspective warp)
+        warped = frame.copy()
+        # Detect ArUco markers in the full frame for position mapping
+        gray = cv2.cvtColor(warped, cv2.COLOR_BGR2GRAY)
         corners, ids, rejected = aruco.detectMarkers(gray, aruco_dict, parameters=parameters)
         marker_centers = {}
         if ids is not None:
@@ -162,69 +159,66 @@ if corner_centers is not None:
             for i, marker_id in enumerate(ids_flat):
                 c = corners[i][0]
                 center = np.mean(c, axis=0)
-                # Map marker center to warped image
-                pt = np.array([*center, 1.0])
-                mapped = H_warp @ pt
-                mapped /= mapped[2]
-                marker_centers[marker_id] = mapped[:2]
-            # Draw the fixed area (rectangle)
-            cv2.polylines(warped, [np.int32(dst_rect)], isClosed=True, color=(0,255,0), thickness=2)
+                marker_centers[marker_id] = center
+        # Always draw the fixed area (rectangle) for reference (green box)
+        if corner_centers is not None:
+            cv2.polylines(warped, [np.int32(corner_centers)], isClosed=True, color=(0,255,0), thickness=2)
 
-            # Prepare data for Simulink (single target)
-            inner_positions = {}
-            if target_id in marker_centers:
-                x, y = marker_centers[target_id]
-                inner_positions[target_id] = (x / WARP_W, y / WARP_H)
-                cv2.circle(warped, tuple(np.int32(marker_centers[target_id])), 8, (0,0,255), -1)
-                cv2.putText(warped, f"({x/WARP_W:.2f}, {y/WARP_H:.2f})", tuple(np.int32(marker_centers[target_id]+10)), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0,0,255), 2)
+        # Prepare data for Simulink (single target)
+        inner_positions = {}
+        if target_id in marker_centers:
+            x, y = marker_centers[target_id]
+            inner_positions[target_id] = (x / WARP_W, y / WARP_H)
+            cv2.circle(warped, tuple(np.int32(marker_centers[target_id])), 8, (0,0,255), -1)
+            cv2.putText(warped, f"({x/WARP_W:.2f}, {y/WARP_H:.2f})", tuple(np.int32(marker_centers[target_id]+10)), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0,0,255), 2)
 
-            # --- Red Ball Detection and Tracking ---
-            ball_position = None
-            if 'ball_path_warped' not in globals():
-                ball_path_warped = []  # List of (point, timestamp)
-            PATH_DURATION = 2.0  # seconds to keep in path
-            # Only track if both ArUco markers are found
-            if target_id in inner_positions:
-                # --- Blue Line Detection and Arc Calculation ---
-                hsv_img = cv2.cvtColor(warped, cv2.COLOR_BGR2HSV)
-                lower_blue = np.array([100, 120, 70])
-                upper_blue = np.array([130, 255, 255])
-                mask_blue = cv2.inRange(hsv_img, lower_blue, upper_blue)
-                lines = cv2.HoughLinesP(mask_blue, 1, np.pi/180, threshold=20, minLineLength=40, maxLineGap=15)
-                if lines is not None:
-                    # Pick the longest line as the direction
-                    longest = max(lines, key=lambda l: np.linalg.norm([l[0][2]-l[0][0], l[0][3]-l[0][1]]))
-                    xA, yA, xB, yB = longest[0]
-                    # Draw the blue line on the main image for visualization
-                    cv2.line(warped, (xA, yA), (xB, yB), (255,0,0), 3)
-                    # Use the midpoint as the 'ball' position
-                    x_ball = (xA + xB) / 2
-                    y_ball = (yA + yB) / 2
-                    center_ball = (int(x_ball), int(y_ball))
-                    ball_position = center_ball
-                    blue_dir = np.array([xB-xA, yB-yA], dtype=np.float32)
-                    if np.linalg.norm(blue_dir) > 1e-3:
-                        blue_dir = blue_dir / np.linalg.norm(blue_dir)
-                    # --- Ball path tracking ---
-                    now = time.time()
-                    ball_path_warped.append((center_ball, now))
-                    # Remove points older than PATH_DURATION seconds
-                    ball_path_warped = [(pt, t) for pt, t in ball_path_warped if now - t <= PATH_DURATION]
-                    # Draw the path (only recent points)
-                    if len(ball_path_warped) > 1:
-                        pts = np.array([pt for pt, t in ball_path_warped], dtype=np.int32)
-                        cv2.polylines(warped, [pts], False, (0,0,255), 2)
-                    # Draw major direction arrow (from recent path)
-                    major_window = min(20, len(ball_path_warped)-1)
-                    if major_window > 2:
-                        pt1 = ball_path_warped[-major_window][0]
-                        pt2 = ball_path_warped[-1][0]
-                        major_vec = np.array(pt2) - np.array(pt1)
-                        if np.linalg.norm(major_vec) > 10:
-                            cv2.arrowedLine(warped, tuple(pt1), tuple(pt2), (0,255,255), 3, tipLength=0.3)
-                    # Draw line to the target marker only
-                    if target_id in marker_centers:
-                        cv2.line(warped, center_ball, tuple(np.int32(marker_centers[target_id])), (0,0,255), 2)
+        # --- Red Ball Detection and Tracking ---
+        ball_position = None
+        if 'ball_path_warped' not in globals():
+            ball_path_warped = []  # List of (point, timestamp)
+        PATH_DURATION = 2.0  # seconds to keep in path
+        # Only track if both ArUco markers are found
+        if target_id in inner_positions:
+            # --- Blue Line Detection and Arc Calculation ---
+            hsv_img = cv2.cvtColor(warped, cv2.COLOR_BGR2HSV)
+            lower_blue = np.array([100, 120, 70])
+            upper_blue = np.array([130, 255, 255])
+            mask_blue = cv2.inRange(hsv_img, lower_blue, upper_blue)
+            lines = cv2.HoughLinesP(mask_blue, 1, np.pi/180, threshold=20, minLineLength=40, maxLineGap=15)
+            if lines is not None:
+                # Pick the longest line as the direction
+                longest = max(lines, key=lambda l: np.linalg.norm([l[0][2]-l[0][0], l[0][3]-l[0][1]]))
+                xA, yA, xB, yB = longest[0]
+                # Draw the blue line on the main image for visualization
+                cv2.line(warped, (xA, yA), (xB, yB), (255,0,0), 3)
+                # Use the midpoint as the 'ball' position
+                x_ball = (xA + xB) / 2
+                y_ball = (yA + yB) / 2
+                center_ball = (int(x_ball), int(y_ball))
+                ball_position = center_ball
+                blue_dir = np.array([xB-xA, yB-yA], dtype=np.float32)
+                if np.linalg.norm(blue_dir) > 1e-3:
+                    blue_dir = blue_dir / np.linalg.norm(blue_dir)
+                # --- Ball path tracking ---
+                now = time.time()
+                ball_path_warped.append((center_ball, now))
+                # Remove points older than PATH_DURATION seconds
+                ball_path_warped = [(pt, t) for pt, t in ball_path_warped if now - t <= PATH_DURATION]
+                # Draw the path (only recent points)
+                if len(ball_path_warped) > 1:
+                    pts = np.array([pt for pt, t in ball_path_warped], dtype=np.int32)
+                    cv2.polylines(warped, [pts], False, (0,0,255), 2)
+                # Draw major direction arrow (from recent path)
+                major_window = min(20, len(ball_path_warped)-1)
+                if major_window > 2:
+                    pt1 = ball_path_warped[-major_window][0]
+                    pt2 = ball_path_warped[-1][0]
+                    major_vec = np.array(pt2) - np.array(pt1)
+                    if np.linalg.norm(major_vec) > 10:
+                        cv2.arrowedLine(warped, tuple(pt1), tuple(pt2), (0,255,255), 3, tipLength=0.3)
+                # Draw line to the target marker only
+                if target_id in marker_centers:
+                    cv2.line(warped, center_ball, tuple(np.int32(marker_centers[target_id])), (0,0,255), 2)
                     # Map ball position to normalized coordinates
                     x_norm, y_norm = x_ball / WARP_W, y_ball / WARP_H
                     cv2.putText(warped, f"Ball ({x_norm:.2f}, {y_norm:.2f})", (center_ball[0]+10, center_ball[1]), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0,0,255), 2)
@@ -284,35 +278,48 @@ if corner_centers is not None:
                     # Send ball position, arc length, and radius to Simulink
                     msg = f"ball,{x_norm:.4f},{y_norm:.4f};arc_radius,{last_arc_radius if last_arc_radius is not None else 0:.4f};" + \
                         f"{target_id},{inner_positions[target_id][0]:.4f},{inner_positions[target_id][1]:.4f}" if target_id in inner_positions else ""
-                    # sock_send.sendto(msg.encode(), (UDP_IP_SEND, UDP_PORT))
-                    # --- Calculate distance and arc angle to target ArUco marker ---
-                    if last_arc_center is not None and last_arc_radius is not None and ball_position is not None and target_id in marker_centers:
-                        # Distance from ball to target marker
+                    sock_send.sendto(msg.encode(), (UDP_IP_SEND, UDP_PORT))
+                    # --- Calculate speed and tilt angle for Simulink ---
+                    if ball_position is not None and target_id in marker_centers:
                         target_pos = np.array(marker_centers[target_id])
                         ball_pos = np.array(ball_position)
-                        distance = np.linalg.norm(target_pos - ball_pos)
-                        # Convert distance to steps (u
-                        # 
-                        # ser input required)
-                        MOTOR_STEP_MM = 5  # Example: 5mm per step (change as needed)
-                        steps = int(distance / MOTOR_STEP_MM)
-                        # Arc angle in degrees
-                        if last_arc_center is not None:
-                            def angle_between(center, pt):
-                                return math.atan2(pt[1]-center[1], pt[0]-center[0])
-                            angle1 = angle_between(last_arc_center, ball_pos)
-                            angle2 = angle_between(last_arc_center, target_pos)
-                            arc_angle_rad = abs(angle2 - angle1)
-                            arc_angle_rad = min(arc_angle_rad, 2*math.pi - arc_angle_rad)
-                            arc_angle_deg = int(np.degrees(arc_angle_rad))
+                        # Distance to target (normalized)
+                        distance = np.linalg.norm(target_pos - ball_pos) / WARP_W
+                        # Speed ramps up if far, slows down if close
+                        # Use a sigmoid ramp for smoothness
+                        speed = 2 / (1 + np.exp(-8 * (distance - 0.2))) - 1  # Range: -1 to 1
+                        # If ball is behind target, reverse direction
+                        direction_vec = (target_pos - ball_pos)
+                        blue_vec = blue_dir / (np.linalg.norm(blue_dir) + 1e-6)
+                        if np.dot(direction_vec, blue_vec) < 0:
+                            speed = -abs(speed)
                         else:
-                            arc_angle_deg = 0
-                        # Prepare int8 array for UDP
-                        steps_int8 = np.clip(steps, -128, 127)
-                        angle_int8 = np.clip(arc_angle_deg, -128, 127)
-                        udp_array = np.array([steps_int8, angle_int8], dtype=np.int8)
-                        #sock_send.sendto(udp_array.tobytes(), (UDP_IP_SEND, UDP_PORT))
-                        print(f"[UDP] Sent steps: {steps_int8}, angle: {angle_int8}")
+                            speed = abs(speed)
+                        # Clamp speed to [-1, -0.65] U [0.65, 1] (minimum magnitude 0.65 if nonzero)
+                        if 0 < abs(speed) < 0.65:
+                            speed = 0.65 * np.sign(speed)
+                        speed = np.clip(speed, -1, 1)
+
+                        # Tilt angle calculation
+                        # Angle between blue line direction and direction to target
+                        angle_to_target = math.atan2(direction_vec[1], direction_vec[0])
+                        blue_angle = math.atan2(blue_vec[1], blue_vec[0])
+                        tilt_angle = np.degrees(angle_to_target - blue_angle)
+                        # Normalize to [-180, 180]
+                        tilt_angle = (tilt_angle + 180) % 360 - 180
+                        tilt_angle = (tilt_angle)*23/180  # Scale to max tilt of 23 degrees
+                        # Clamp to [-23, 23]
+                        #tilt_angle = np.clip(tilt_angle, -23, 23)
+
+                        # Throttle UDP sending to once every 0.2 seconds
+                        if 'last_udp_send_time' not in globals():
+                            last_udp_send_time = 0
+                        now = time.time()
+                        if now - last_udp_send_time >= 0.2:
+                            udp_array = np.array([speed, tilt_angle], dtype=np.float64)
+                            sock_send.sendto(udp_array.tobytes(), (UDP_IP_SEND, UDP_PORT))
+                            print(f"[UDP] Sent speed: {speed:.2f}, tilt_angle: {tilt_angle:.2f}")
+                            last_udp_send_time = now
         else:
             cv2.polylines(warped, [np.int32(dst_rect)], isClosed=True, color=(0,255,0), thickness=2)
         cv2.imshow("Live Tracking", warped)
