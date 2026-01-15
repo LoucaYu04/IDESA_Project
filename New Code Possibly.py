@@ -60,9 +60,18 @@ def on_blue_detected():
     print("Blue detected! Running blue function...")
 
 # --- ArUco Area Tracking Setup ---
+
+
 # Set your ArUco marker IDs here
 corner_ids = [0, 1, 2, 3]  # Replace with your actual corner marker IDs
-inner_ids = [4, 5]           # Replace with your actual inner marker IDs
+
+# Prompt user for the target ArUco marker ID
+while True:
+    try:
+        target_id = int(input("Enter the ArUco ID of the target marker: "))
+        break
+    except ValueError:
+        print("Invalid input. Please enter an integer.")
 
 def order_corners(corners_dict):
     # Returns corners in order: [top-left, top-right, bottom-right, bottom-left]
@@ -160,14 +169,14 @@ if corner_centers is not None:
                 marker_centers[marker_id] = mapped[:2]
             # Draw the fixed area (rectangle)
             cv2.polylines(warped, [np.int32(dst_rect)], isClosed=True, color=(0,255,0), thickness=2)
-            # Prepare data for Simulink
+
+            # Prepare data for Simulink (single target)
             inner_positions = {}
-            for iid in inner_ids:
-                if iid in marker_centers:
-                    x, y = marker_centers[iid]
-                    inner_positions[iid] = (x / WARP_W, y / WARP_H)
-                    cv2.circle(warped, tuple(np.int32(marker_centers[iid])), 8, (0,0,255), -1)
-                    cv2.putText(warped, f"({x/WARP_W:.2f}, {y/WARP_H:.2f})", tuple(np.int32(marker_centers[iid]+10)), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0,0,255), 2)
+            if target_id in marker_centers:
+                x, y = marker_centers[target_id]
+                inner_positions[target_id] = (x / WARP_W, y / WARP_H)
+                cv2.circle(warped, tuple(np.int32(marker_centers[target_id])), 8, (0,0,255), -1)
+                cv2.putText(warped, f"({x/WARP_W:.2f}, {y/WARP_H:.2f})", tuple(np.int32(marker_centers[target_id]+10)), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0,0,255), 2)
 
             # --- Red Ball Detection and Tracking ---
             ball_position = None
@@ -175,7 +184,7 @@ if corner_centers is not None:
                 ball_path_warped = []  # List of (point, timestamp)
             PATH_DURATION = 2.0  # seconds to keep in path
             # Only track if both ArUco markers are found
-            if len(inner_positions) == 2:
+            if target_id in inner_positions:
                 # --- Blue Line Detection and Arc Calculation ---
                 hsv_img = cv2.cvtColor(warped, cv2.COLOR_BGR2HSV)
                 lower_blue = np.array([100, 120, 70])
@@ -213,74 +222,68 @@ if corner_centers is not None:
                         major_vec = np.array(pt2) - np.array(pt1)
                         if np.linalg.norm(major_vec) > 10:
                             cv2.arrowedLine(warped, tuple(pt1), tuple(pt2), (0,255,255), 3, tipLength=0.3)
-                    # Draw lines to ArUco markers
-                    for iid in inner_ids:
-                        if iid in marker_centers:
-                            cv2.line(warped, center_ball, tuple(np.int32(marker_centers[iid])), (0,0,255), 2)
+                    # Draw line to the target marker only
+                    if target_id in marker_centers:
+                        cv2.line(warped, center_ball, tuple(np.int32(marker_centers[target_id])), (0,0,255), 2)
                     # Map ball position to normalized coordinates
                     x_norm, y_norm = x_ball / WARP_W, y_ball / WARP_H
                     cv2.putText(warped, f"Ball ({x_norm:.2f}, {y_norm:.2f})", (center_ball[0]+10, center_ball[1]), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0,0,255), 2)
-                    # --- Tangent arc calculation ---
+                    # --- Arc calculation: draw only the arc segment from blue line to each marker ---
                     ball_dir = blue_dir
-                    # --- Arc update threshold logic ---
-                    circle_center = None
-                    circle_radius = None
-                    if 'last_arc_center' not in globals():
-                        last_arc_center = None
-                        last_arc_radius = None
-                    arc_update_threshold = 20  # pixels
                     ball_pos = np.array([x_ball, y_ball])
-                    update_arc = False
-                    # Only calculate arc if both inner markers are found
-                    # and the tangent_circle function is available
-                    if len(inner_positions) == 2:
-                        # Choose target ArUco marker (e.g., inner_ids[0])
-                        target_id = inner_ids[0]
-                        if target_id in marker_centers:
-                            target_pos = np.array(marker_centers[target_id])
-                            # Calculate tangent circle center and radius
-                            def tangent_circle(ball_pos, ball_dir, target_pos):
-                                perp1 = np.array([-ball_dir[1], ball_dir[0]])
-                                perp2 = -perp1
-                                results = []
-                                for perp in [perp1, perp2]:
-                                    d = target_pos - ball_pos
-                                    denom = 2 * np.dot(d, perp)
-                                    if abs(denom) > 1e-6:
-                                        r = np.dot(d, d) / denom
-                                        center = ball_pos + perp * r
-                                        results.append((center, abs(r)))
-                                if results:
-                                    results = [res for res in results if res[1] > 0]
-                                    if results:
-                                        return min(results, key=lambda x: x[1])
-                                return (np.array([np.nan, np.nan]), np.nan)
-                            circle_center, circle_radius = tangent_circle(ball_pos, ball_dir, target_pos)
-                    # Only update arc if circle_center and circle_radius are valid
-                    if circle_center is not None and not np.isnan(circle_center[0]) and not np.isnan(circle_radius):
-                        if last_arc_center is None or last_arc_radius is None:
-                            update_arc = True
+                    if target_id in marker_centers:
+                        target_pos = np.array(marker_centers[target_id])
+                        v = ball_dir / np.linalg.norm(ball_dir)
+                        w = target_pos - ball_pos
+                        # Project w onto v to get the tangent point
+                        proj = np.dot(w, v) * v
+                        perp = w - proj
+                        if np.linalg.norm(perp) < 1e-6:
+                            # If the marker is directly in line, just draw a straight line
+                            cv2.line(warped, tuple(center_ball), tuple(np.int32(target_pos)), (0,255,255), 3)
                         else:
-                            center_diff = np.linalg.norm(circle_center - last_arc_center)
-                            radius_diff = abs(circle_radius - last_arc_radius)
-                            if center_diff > arc_update_threshold or radius_diff > arc_update_threshold:
-                                update_arc = True
-                        if update_arc:
-                            # Smooth transition (moving average)
-                            if last_arc_center is not None and last_arc_radius is not None:
-                                alpha = 0.3  # smoothing factor
-                                last_arc_center = (1 - alpha) * last_arc_center + alpha * circle_center
-                                last_arc_radius = (1 - alpha) * last_arc_radius + alpha * circle_radius
-                            else:
-                                last_arc_center = circle_center.copy()
-                                last_arc_radius = circle_radius
-                    # Draw the arc (always draw the last one)
-                    if last_arc_center is not None and last_arc_radius is not None:
-                        if not np.isnan(last_arc_center[0]):
-                            cv2.circle(warped, tuple(np.int32(last_arc_center)), int(last_arc_radius), (255,0,0), 1)
+                            # Find the center of the circle passing through ball_pos and target_pos, with tangent v at ball_pos
+                            # The center lies at ball_pos + normal * r, where r = |w|^2 / (2 * |perp|)
+                            r = np.dot(w, w) / (2 * np.linalg.norm(perp))
+                            normal = np.array([-v[1], v[0]])
+                            # Choose the normal direction so that the center is on the same side as perp
+                            if np.dot(perp, normal) < 0:
+                                normal = -normal
+                            center = ball_pos + normal * r
+                            radius = np.linalg.norm(center - ball_pos)
+                            # Draw the arc from ball_position to target_pos
+                            def draw_arc_segment(img, center, radius, pt1, pt2, color, thickness=2):
+                                angle = lambda c, p: math.atan2(p[1]-c[1], p[0]-c[0])
+                                a1 = angle(center, pt1)
+                                a2 = angle(center, pt2)
+                                # Ensure shortest arc direction
+                                delta = (a2 - a1) % (2*math.pi)
+                                if delta > math.pi:
+                                    a1, a2 = a2, a1
+                                    delta = (a2 - a1) % (2*math.pi)
+                                num_pts = max(10, int(abs(delta)*radius/5))
+                                arc_pts = [
+                                    (
+                                        int(center[0] + radius * math.cos(a1 + t * delta / num_pts)),
+                                        int(center[1] + radius * math.sin(a1 + t * delta / num_pts))
+                                    )
+                                    for t in range(num_pts+1)
+                                ]
+                                cv2.polylines(img, [np.array(arc_pts, dtype=np.int32)], False, color, thickness)
+
+                            if ball_position is not None:
+                                draw_arc_segment(
+                                    warped,
+                                    center,
+                                    radius,
+                                    center_ball,
+                                    marker_centers[target_id],
+                                    (0,255,255),
+                                    3
+                                )
                     # Send ball position, arc length, and radius to Simulink
                     msg = f"ball,{x_norm:.4f},{y_norm:.4f};arc_radius,{last_arc_radius if last_arc_radius is not None else 0:.4f};" + \
-                        ";".join([f"{iid},{inner_positions[iid][0]:.4f},{inner_positions[iid][1]:.4f}" for iid in inner_ids])
+                        f"{target_id},{inner_positions[target_id][0]:.4f},{inner_positions[target_id][1]:.4f}" if target_id in inner_positions else ""
                     # sock_send.sendto(msg.encode(), (UDP_IP_SEND, UDP_PORT))
                     # --- Calculate distance and arc angle to target ArUco marker ---
                     if last_arc_center is not None and last_arc_radius is not None and ball_position is not None and target_id in marker_centers:
@@ -288,7 +291,9 @@ if corner_centers is not None:
                         target_pos = np.array(marker_centers[target_id])
                         ball_pos = np.array(ball_position)
                         distance = np.linalg.norm(target_pos - ball_pos)
-                        # Convert distance to steps (user input required)
+                        # Convert distance to steps (u
+                        # 
+                        # ser input required)
                         MOTOR_STEP_MM = 5  # Example: 5mm per step (change as needed)
                         steps = int(distance / MOTOR_STEP_MM)
                         # Arc angle in degrees
