@@ -9,7 +9,7 @@ os.environ["SDL_JOYSTICK_HIDAPI"] = "0"
 
 
 # --- UDP Setup ---
-UDP_IP_SEND = "138.38.228.211"
+UDP_IP_SEND = "138.38.227.25"
 UDP_IP_RECEIVE = "172.26.109.96" #LOUCA'S LAPTOP IP
 UDP_PORT = 25000
 sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -71,11 +71,13 @@ def controller_loop():
         # Second value: Left joystick X axis (axis 0), -1 (left) to 1 (right), map to -20 to 20
         joy_x = joystick.get_axis(0)  # Right joystick X axis
         print(joy_x)
-        steer_val = float(joy_x) * 20.0  # -20 (left) to 20 (right)
+        steer_val = float(joy_x) *60.0  # -20 (left) to 20 (right)
+        if abs(steer_val) < 6.6:
+            steer_val = 0.0  # Deadzone:
         arr = np.array([move_val, steer_val], dtype=np.float64)
         sock.sendto(arr.tobytes(), (UDP_IP_SEND, UDP_PORT))
         values_label.config(text=f"Values sent: {move_val:.3f}, {steer_val:.3f}")
-        pygame.time.wait(50)
+        pygame.time.wait(100)
 
 # Run controller loop in a thread so UI stays responsive
 Thread(target=controller_loop, daemon=True).start()
