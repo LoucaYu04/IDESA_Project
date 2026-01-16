@@ -10,7 +10,7 @@ import time
 # Setup UDP communication parameters
 UDP_IP_SEND = "138.38.227.25"
 UDP_IP_RECEIVE = "172.26.109.96"  # LOUCA'S LAPTOP IP
-UDP_PORT = 1738
+UDP_PORT = 25000
 
 # Create separate sockets for sending and receiving
 sock_send = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -283,22 +283,41 @@ if corner_centers is not None:
                     if ball_position is not None and target_id in marker_centers:
                         target_pos = np.array(marker_centers[target_id])
                         ball_pos = np.array(ball_position)
-                        # Distance to target (normalized)
+                        # Distance to target (normalized and pixel)
                         distance = np.linalg.norm(target_pos - ball_pos) / WARP_W
-                        # Speed ramps up if far, slows down if close
-                        # Use a sigmoid ramp for smoothness
-                        speed = 2 / (1 + np.exp(-8 * (distance - 0.2))) - 1  # Range: -1 to 1
-                        # If ball is behind target, reverse direction
-                        direction_vec = (target_pos - ball_pos)
-                        blue_vec = blue_dir / (np.linalg.norm(blue_dir) + 1e-6)
-                        if np.dot(direction_vec, blue_vec) < 0:
-                            speed = -abs(speed)
+                        pixel_distance = np.linalg.norm(target_pos - ball_pos)
+                        # Catchment area radius (in pixels)
+                        catchment_radius = 25
+                        if pixel_distance <= catchment_radius:
+                            speed = 0
+                            print(f"Ball reached catchment area of ArUco {target_id}. Stopping.\n")
+                            # Always send speed and tilt angle as double array to Simulink
+                            udp_array = np.array([speed, tilt_angle], dtype=np.double)
+                            sock_send.sendto(udp_array.tobytes(), (UDP_IP_SEND, UDP_PORT))
+                            print(f"[UDP] Sent speed: {speed:.2f}, tilt_angle: {tilt_angle:.2f}")
+                            # Prompt for new ArUco ID
+                            while True:
+                                try:
+                                    new_id = int(input("Enter the ArUco ID of the next target marker: "))
+                                    target_id = new_id
+                                    break
+                                except ValueError:
+                                    print("Invalid input. Please enter an integer.")
                         else:
-                            speed = abs(speed)
-                        # Clamp speed to [-1, -0.65] U [0.65, 1] (minimum magnitude 0.65 if nonzero)
-                        if 0 < abs(speed) < 0.65:
-                            speed = 0.65 * np.sign(speed)
-                        speed = np.clip(speed, -1, 1)
+                            # Speed ramps up if far, slows down if close
+                            # Use a sigmoid ramp for smoothness
+                            speed = 2 / (1 + np.exp(-8 * (distance - 0.2))) - 1  # Range: -1 to 1
+                            # If ball is behind target, reverse direction
+                            direction_vec = (target_pos - ball_pos)
+                            blue_vec = blue_dir / (np.linalg.norm(blue_dir) + 1e-6)
+                            if np.dot(direction_vec, blue_vec) < 0:
+                                speed = -abs(speed)
+                            else:
+                                speed = abs(speed)
+                            # Clamp speed to [-1, -0.75] U [0.75, 1] (minimum magnitude 0.75 if nonzero)
+                            if 0 < abs(speed) < 0.75:
+                                speed = 0.75 * np.sign(speed)
+                            speed = np.clip(speed, -1, 1)
 
                         # Tilt angle calculation
                         # Angle between blue line direction and direction to target
@@ -311,12 +330,12 @@ if corner_centers is not None:
                         # Clamp to [-23, 23]
                         #tilt_angle = np.clip(tilt_angle, -23, 23)
 
-                        # Throttle UDP sending to once every 0.2 seconds
+                        # Throttle UDP sending to 100 times per second (every 0.01 seconds)
                         if 'last_udp_send_time' not in globals():
                             last_udp_send_time = 0
                         now = time.time()
-                        if now - last_udp_send_time >= 0.2:
-                            udp_array = np.array([speed, tilt_angle], dtype=np.float64)
+                        if now - last_udp_send_time >= 0.01:
+                            udp_array = np.array([speed, tilt_angle], dtype=np.double)
                             sock_send.sendto(udp_array.tobytes(), (UDP_IP_SEND, UDP_PORT))
                             print(f"[UDP] Sent speed: {speed:.2f}, tilt_angle: {tilt_angle:.2f}")
                             last_udp_send_time = now
