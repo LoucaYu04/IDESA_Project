@@ -61,7 +61,7 @@ def on_blue_detected():
 
 
 # Set your ArUco marker IDs here
-corner_ids = [0, 1, 2, 3]  # Replace with your actual corner marker IDs
+corner_ids = [4, 1, 2, 3]  # Replace with your actual corner marker IDs
 
 # Prompt user for the target ArUco marker ID
 while True:
@@ -181,17 +181,36 @@ if corner_centers is not None:
         if target_id in inner_positions:
             # --- Blue Line Detection and Arc Calculation ---
             hsv_img = cv2.cvtColor(warped, cv2.COLOR_BGR2HSV)
-            lower_blue = np.array([100, 120, 70])
-            upper_blue = np.array([130, 255, 255])
+            # Enlarged HSV range for blue
+            lower_blue = np.array([85, 50, 30])   # H, S, V
+            upper_blue = np.array([140, 255, 255])
             mask_blue = cv2.inRange(hsv_img, lower_blue, upper_blue)
-            lines = cv2.HoughLinesP(mask_blue, 1, np.pi/180, threshold=20, minLineLength=40, maxLineGap=15)
-            if lines is not None:
-                # Pick the longest line as the direction
-                longest = max(lines, key=lambda l: np.linalg.norm([l[0][2]-l[0][0], l[0][3]-l[0][1]]))
-                xA, yA, xB, yB = longest[0]
-                # Draw the blue line on the main image for visualization
+            lines = cv2.HoughLinesP(mask_blue, 1, np.pi/180, threshold=15, minLineLength=20, maxLineGap=10)
+            if lines is not None and len(lines) >= 2:
+                # Find the two longest lines (assume these are the two parallel blue lines)
+                sorted_lines = sorted(lines, key=lambda l: np.linalg.norm([l[0][2]-l[0][0], l[0][3]-l[0][1]]), reverse=True)
+                line1 = sorted_lines[0][0]
+                line2 = sorted_lines[1][0]
+                # Draw both blue lines for visualization
+                cv2.line(warped, (line1[0], line1[1]), (line1[2], line1[3]), (255,0,0), 3)
+                cv2.line(warped, (line2[0], line2[1]), (line2[2], line2[3]), (255,0,0), 3)
+                # Compute the midpoints of both lines
+                mid1 = np.array([(line1[0] + line1[2]) / 2, (line1[1] + line1[3]) / 2])
+                mid2 = np.array([(line2[0] + line2[2]) / 2, (line2[1] + line2[3]) / 2])
+                # Use the midpoint between the two lines as the 'ball' position
+                x_ball, y_ball = ((mid1 + mid2) / 2)
+                center_ball = (int(x_ball), int(y_ball))
+                ball_position = center_ball
+                # Use the average direction of the two lines as the blue direction
+                dir1 = np.array([line1[2] - line1[0], line1[3] - line1[1]], dtype=np.float32)
+                dir2 = np.array([line2[2] - line2[0], line2[3] - line2[1]], dtype=np.float32)
+                blue_dir = (dir1 + dir2) / 2
+                if np.linalg.norm(blue_dir) > 1e-3:
+                    blue_dir = blue_dir / np.linalg.norm(blue_dir)
+            elif lines is not None and len(lines) == 1:
+                # Fallback: only one line detected, use as before
+                xA, yA, xB, yB = lines[0][0]
                 cv2.line(warped, (xA, yA), (xB, yB), (255,0,0), 3)
-                # Use the midpoint as the 'ball' position
                 x_ball = (xA + xB) / 2
                 y_ball = (yA + yB) / 2
                 center_ball = (int(x_ball), int(y_ball))
@@ -284,17 +303,23 @@ if corner_centers is not None:
                         # Distance to target (normalized and pixel)
                         distance = np.linalg.norm(target_pos - ball_pos) / WARP_W
                         pixel_distance = np.linalg.norm(target_pos - ball_pos)
-                        # Catchment area radius (in pixels)
-                        catchment_radius = 75  # Increased from 25 for a larger stop zone
-                        slow_radius = 240  # Increased from 60 for a larger slow-down zone
+                        catchment_radius = 75
+                        slow_radius = 240
+                        # Ball velocity vector (from path)
+                        if len(ball_path_warped) > 2:
+                            prev_ball_pos = np.array(ball_path_warped[-2][0])
+                            velocity_vec = ball_pos - prev_ball_pos
+                        else:
+                            velocity_vec = target_pos - ball_pos  # fallback: point toward target
+                        # Always move toward the target (speed always positive toward target)
                         if pixel_distance <= catchment_radius:
                             while True:
                                 speed = 0
+                                tilt_angle = 0
                                 print(f"Ball reached catchment area of ArUco {target_id}. Stopping.\n")
                                 udp_array = np.array([speed, tilt_angle], dtype=np.float64)
                                 sock_send.sendto(udp_array.tobytes(), (UDP_IP_SEND, UDP_PORT))
                                 print(f"[UDP] Sent speed: {speed:.2f}, tilt_angle: {tilt_angle:.2f}")
-                                # Prompt for new ArUco ID and wait until a valid one is entered
                                 try:
                                     new_id = int(input("Enter the ArUco ID of the next target marker: "))
                                     if new_id == target_id:
@@ -302,46 +327,31 @@ if corner_centers is not None:
                                         continue
                                     target_id = new_id
                                     print(f"Now tracking ArUco marker {target_id}.")
-                                    # After changing target, check if ball is already in the new catchment area
                                     if target_id in marker_centers and ball_position is not None:
                                         target_pos = np.array(marker_centers[target_id])
                                         ball_pos = np.array(ball_position)
                                         pixel_distance = np.linalg.norm(target_pos - ball_pos)
                                         if pixel_distance <= catchment_radius:
-                                            # Loop again to handle immediate catchment for new target
                                             continue
                                     break
                                 except ValueError:
                                     print("Invalid input. Please enter an integer.")
                         else:
                             # Speed ramps up if far, slows down if close
-                            # Use a sigmoid ramp for smoothness, but scale to [-2, 2]
-                            speed = 1 * (2 / (1 + np.exp(-8 * (distance - 0.2))) - 1)  # Range: -2 to 2
-                            # If ball is behind target, reverse direction
-                            direction_vec = (target_pos - ball_pos)
-                            blue_vec = blue_dir / (np.linalg.norm(blue_dir) + 1e-6)
-                            if np.dot(direction_vec, blue_vec) < 0:
-                                speed = -abs(speed)
-                            else:
-                                speed = abs(speed)
-                            # Smoothly slow down as ball approaches catchment area
+                            speed = 1 * (2 / (1 + np.exp(-8 * (distance - 0.2))) - 1)
+                            speed = abs(speed)
                             if pixel_distance <= slow_radius:
-                                # Linear ramp from max speed to 0 as ball approaches target
                                 speed = 1 * (pixel_distance - catchment_radius) / (slow_radius - catchment_radius)
-                                speed = np.clip(speed, 0, 1) * np.sign(speed)
-                            # Clamp speed to [-1.5, 1.5] (no minimum speed clamp)
-                            speed = np.clip(speed, -1, 1)
+                                speed = np.clip(speed, 0, 1)
+                            speed = np.clip(speed, 0, 1)
 
-                        # Tilt angle calculation
-                        # Angle between blue line direction and direction to target
-                        angle_to_target = math.atan2(direction_vec[1], direction_vec[0])
-                        blue_angle = math.atan2(blue_vec[1], blue_vec[0])
-                        tilt_angle = np.degrees(angle_to_target - blue_angle)
-                        # Normalize to [-180, 180]
-                        tilt_angle = (tilt_angle + 180) % 360 - 180
-                        tilt_angle = (tilt_angle)*-23/180  # Scale to max tilt of 23 degrees
-                        # Clamp to [-23, 23]
-                        #tilt_angle = np.clip(tilt_angle, -23, 23)
+                        # Tilt angle: steer based on angle off the direct line to target
+                        direction_vec = target_pos - ball_pos
+                        direction_vec_norm = direction_vec / (np.linalg.norm(direction_vec) + 1e-6)
+                        velocity_norm = velocity_vec / (np.linalg.norm(velocity_vec) + 1e-6)
+                        # Angle between velocity and direct line to target
+                        angle_off = np.arcsin(np.cross(direction_vec_norm, velocity_norm))
+                        tilt_angle = -5 * angle_off  # Negative to steer toward the line
 
                         # Throttle UDP sending to 100 times per second (every 0.01 seconds)
                         if 'last_udp_send_time' not in globals():
