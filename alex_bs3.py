@@ -266,6 +266,7 @@ if corner_centers is not None:
                         end_tilt = (int(center_ball[0] + perp_vec[0] * tilt_arrow_len), int(center_ball[1] + perp_vec[1] * tilt_arrow_len))
                         cv2.arrowedLine(warped, center_ball, end_tilt, (0, 0, 255), 4, tipLength=0.3)
                         cv2.putText(warped, f"Tilt: {tilt_angle:.1f}", (center_ball[0] + 10, center_ball[1] + 40), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0,0,255), 2)
+                        
                     if 'last_udp_send_time' not in globals():
                         last_udp_send_time = 0
                     now = time.time()
