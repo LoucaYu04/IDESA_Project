@@ -129,20 +129,20 @@ cv2.destroyAllWindows()
 '''
 
 root = tk.Tk()
-root.title("Mars Robot Color Signal Sender")
+root.title("Mars Robot Race Control")
 root.geometry("400x320")
 root.configure(bg="#1a1a2e")
 
-label = tk.Label(root, text="Send Robot Color Signal to Mars", font=("Arial", 16, "bold"), fg="#f5f6fa", bg="#1a1a2e")
+label = tk.Label(root, text="Send Mars Race Control Flag", font=("Arial", 16, "bold"), fg="#f5f6fa", bg="#1a1a2e")
 label.pack(pady=25)
 
-btn_green = tk.Button(root, text="Send GREEN Signal", width=20, height=2, bg="#21e675", fg="#222", font=("Arial", 12, "bold"), activebackground="#16a34a", activeforeground="#fff", command=lambda: send_udp_for_color("Green"))
+btn_green = tk.Button(root, text="Green Flag", width=20, height=2, bg="#21e675", fg="#222", font=("Arial", 12, "bold"), activebackground="#16a34a", activeforeground="#fff", command=lambda: send_udp_for_color("Green"))
 btn_green.pack(pady=10)
 
-btn_blue = tk.Button(root, text="Send BLUE Signal", width=20, height=2, bg="#3a7bd5", fg="#fff", font=("Arial", 12, "bold"), activebackground="#27408b", activeforeground="#fff", command=lambda: send_udp_for_color("Blue"))
+btn_blue = tk.Button(root, text="Blue Flag", width=20, height=2, bg="#3a7bd5", fg="#fff", font=("Arial", 12, "bold"), activebackground="#27408b", activeforeground="#fff", command=lambda: send_udp_for_color("Blue"))
 btn_blue.pack(pady=10)
 
-btn_red = tk.Button(root, text="Send RED Signal", width=20, height=2, bg="#e94560", fg="#fff", font=("Arial", 12, "bold"), activebackground="#b22234", activeforeground="#fff", command=lambda: send_udp_for_color("Red"))
+btn_red = tk.Button(root, text="Red Flag", width=20, height=2, bg="#e94560", fg="#fff", font=("Arial", 12, "bold"), activebackground="#b22234", activeforeground="#fff", command=lambda: send_udp_for_color("Red"))
 btn_red.pack(pady=10)
 
 # Add a color box to show the last sent color

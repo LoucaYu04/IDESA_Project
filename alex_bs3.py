@@ -12,7 +12,7 @@ import tkinter as tk
 
 
 # Setup UDP communication parameters
-UDP_IP_SEND = "138.38.227.25"
+UDP_IP_SEND = "138.38.228.97"
 UDP_IP_RECEIVE = "172.26.109.96"  # LOUCA'S LAPTOP IP
 UDP_PORT = 25000
 
@@ -131,7 +131,7 @@ while True:
         # Ensure corner_ids are also int for comparison
         if all(int(cid) in marker_centers for cid in corner_ids):
             ordered_corners = order_corners(marker_centers)
-            cv2.polylines(frame, [np.int32(ordered_corners)], isClosed=True, color=(0,255,0), thickness=2)
+            cv2.polylines(frame, [np.int32(ordered_corners)], isClosed=True, color=(255,0,0), thickness=2)
             corner_centers = ordered_corners.copy()
             cv2.putText(frame, "Corners set! Press 'q' to continue", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 1, (0,255,0), 2)
         else:
@@ -144,66 +144,20 @@ while True:
         break
 
 # --- PHASE 2: Live tracking with fixed corners ---
+
+# --- Combined Tkinter GUI and OpenCV feed ---
 if corner_centers is not None:
-    # --- Window size for warped area ---
     WARP_W, WARP_H = 600, 600
     dst_rect = np.array([[0,0],[WARP_W-1,0],[WARP_W-1,WARP_H-1],[0,WARP_H-1]], dtype=np.float32)
     ball_path_warped = []
     last_arc_center = None
     last_arc_radius = None
-
-    # --- Tkinter GUI thread ---
-    def run_color_signal_gui():
-        root = tk.Tk()
-        root.title("Mars Robot Color Signal Sender")
-        root.geometry("400x320")
-        root.configure(bg="#1a1a2e")
-
-        label = tk.Label(root, text="Send Robot Color Signal to Mars", font=("Arial", 16, "bold"), fg="#f5f6fa", bg="#1a1a2e")
-        label.pack(pady=25)
-
-        color_box = tk.Label(root, text="", width=20, height=2, bg="#444", relief="ridge", bd=3)
-        color_box.pack(pady=10)
-
-        def send_udp_for_color(color_name):
-            if color_name == "Green":
-                send_udp_color_signal(1)
-                color_box.config(bg="#21e675")
-            elif color_name == "Blue":
-                send_udp_color_signal(2)
-                color_box.config(bg="#3a7bd5")
-            elif color_name == "Red":
-                send_udp_color_signal(3)
-                color_box.config(bg="#e94560")
-            else:
-                return
-
-        btn_green = tk.Button(root, text="Send GREEN Signal", width=20, height=2, bg="#21e675", fg="#222", font=("Arial", 12, "bold"), activebackground="#16a34a", activeforeground="#fff", command=lambda: send_udp_for_color("Green"))
-        btn_green.pack(pady=10)
-
-        btn_blue = tk.Button(root, text="Send BLUE Signal", width=20, height=2, bg="#3a7bd5", fg="#fff", font=("Arial", 12, "bold"), activebackground="#27408b", activeforeground="#fff", command=lambda: send_udp_for_color("Blue"))
-        btn_blue.pack(pady=10)
-
-        btn_red = tk.Button(root, text="Send RED Signal", width=20, height=2, bg="#e94560", fg="#fff", font=("Arial", 12, "bold"), activebackground="#b22234", activeforeground="#fff", command=lambda: send_udp_for_color("Red"))
-        btn_red.pack(pady=10)
-
-        footer = tk.Label(root, text="Mission Control: Mars Signal Uplink", font=("Arial", 10, "italic"), fg="#aaa", bg="#1a1a2e")
-        footer.pack(side="bottom", pady=10)
-
-        root.mainloop()
-
-    # Start GUI in a separate thread
-    gui_thread = threading.Thread(target=run_color_signal_gui, daemon=True)
-    gui_thread.start()
     while True:
         ret, frame = cap.read()
         if not ret:
-            print("Failed to grab frame from camera.")
             break
         frame = gray_world_correction(frame)
-        # Use the full camera frame for the tracking window (no perspective warp)
         warped = frame.copy()
-        # Detect ArUco markers in the full frame for position mapping
         gray = cv2.cvtColor(warped, cv2.COLOR_BGR2GRAY)
         corners, ids, rejected = aruco.detectMarkers(gray, aruco_dict, parameters=parameters)
         marker_centers = {}
@@ -214,11 +168,9 @@ if corner_centers is not None:
                 c = corners[i][0]
                 center = np.mean(c, axis=0)
                 marker_centers[marker_id] = center
-        # Always draw the fixed area (rectangle) for reference (green box)
         if corner_centers is not None:
-            cv2.polylines(warped, [np.int32(corner_centers)], isClosed=True, color=(0,255,0), thickness=2)
+            cv2.polylines(warped, [np.int32(corner_centers)], isClosed=True, color=(255,0,0), thickness=2)
 
-        # Prepare data for Simulink (single target)
         inner_positions = {}
         if target_id in marker_centers:
             x, y = marker_centers[target_id]
@@ -226,85 +178,94 @@ if corner_centers is not None:
             cv2.circle(warped, tuple(np.int32(marker_centers[target_id])), 8, (0,0,255), -1)
             cv2.putText(warped, f"({x/WARP_W:.2f}, {y/WARP_H:.2f})", tuple(np.int32(marker_centers[target_id]+10)), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0,0,255), 2)
 
-        # --- Red Ball Detection and Tracking ---
         ball_position = None
         if 'ball_path_warped' not in globals():
-            ball_path_warped = []  # List of (point, timestamp)
-        PATH_DURATION = 2.0  # seconds to keep in path
-        # Only track if both ArUco markers are found
+            ball_path_warped = []
+        PATH_DURATION = 2.0
+
         if target_id in inner_positions:
-            # --- Blue Line Detection and Direct Line Control ---
             hsv_img = cv2.cvtColor(warped, cv2.COLOR_BGR2HSV)
-            lower_blue = np.array([85, 80, 80])
-            upper_blue = np.array([140, 255, 255])
-            mask_blue = cv2.inRange(hsv_img, lower_blue, upper_blue)
-            lines = cv2.HoughLinesP(mask_blue, 1, np.pi/180, threshold=20, minLineLength=20, maxLineGap=15)
+            # Yellow line detection (replace green)
+            lower_yellow = np.array([20, 100, 100])
+            upper_yellow = np.array([35, 255, 255])
+            mask_yellow = cv2.inRange(hsv_img, lower_yellow, upper_yellow)
+            lines = cv2.HoughLinesP(mask_yellow, 1, np.pi/180, threshold=20, minLineLength=20, maxLineGap=15)
             if lines is not None:
-                # Pick the longest line as the direction
                 longest = max(lines, key=lambda l: np.linalg.norm([l[0][2]-l[0][0], l[0][3]-l[0][1]]))
                 xA, yA, xB, yB = longest[0]
-                # Draw the blue line on the main image for visualization
-                cv2.line(warped, (xA, yA), (xB, yB), (255,0,0), 3)
-                # Use the midpoint as the 'ball' position
+                cv2.line(warped, (xA, yA), (xB, yB), (0,255,255), 3)  # Draw yellow line
                 x_ball = (xA + xB) / 2
                 y_ball = (yA + yB) / 2
                 center_ball = (int(x_ball), int(y_ball))
                 ball_position = center_ball
-                # Draw a straight line from ball to target
                 if target_id in marker_centers:
                     target_xy = tuple(np.int32(marker_centers[target_id]))
                     cv2.line(warped, center_ball, target_xy, (0,0,255), 2)
-                    # Map ball position to normalized coordinates
                     x_norm, y_norm = x_ball / WARP_W, y_ball / WARP_H
                     cv2.putText(warped, f"Ball ({x_norm:.2f}, {y_norm:.2f})", (center_ball[0]+10, center_ball[1]), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0,0,255), 2)
 
-                # --- Ball path tracking ---
                 now = time.time()
                 if 'ball_path_warped' not in locals():
                     ball_path_warped = []
                 ball_path_warped.append((center_ball, now))
-                # Remove points older than 2 seconds
                 ball_path_warped = [(pt, t) for pt, t in ball_path_warped if now - t <= 2.0]
-                    # Ensure speed and tilt_angle are always defined if control block is entered
-                    
-
-                # --- Control: always move toward target, steer to stay on line ---
                 if target_id in marker_centers:
                     target_pos = np.array(marker_centers[target_id])
                     ball_pos = np.array(center_ball)
                     direction_vec = target_pos - ball_pos
                     distance = np.linalg.norm(direction_vec)
                     direction_vec_norm = direction_vec / (distance + 1e-6)
-                    # Ball velocity vector (from path)
-                    if len(ball_path_warped) > 2:
+                    if len(ball_path_warped) >= 2:
                         prev_ball_pos = np.array(ball_path_warped[-2][0])
                         velocity_vec = ball_pos - prev_ball_pos
-                    else:
-                        velocity_vec = direction_vec
-                    velocity_norm = velocity_vec / (np.linalg.norm(velocity_vec) + 1e-6)
-                    # Speed: always positive toward target, slow down near target
-                    catchment_radius = 75
-                    slow_radius = 240
-                    if distance <= catchment_radius:
-                        speed = 1 * (2 / (1 + np.exp(-8 * (distance/WARP_W - 0.2))) - 1)
-                        speed = abs(speed)
-                        if distance <= slow_radius:
-                            speed = np.clip(speed, 0, 0.65)
-                        speed = np.clip(speed, 0, 1)
-                        if speed > 0 and speed < 0.6:
-                            speed = 0.6
-                        # Live direction switching: reverse if moving away, forward if moving toward
-                        moving_away = np.dot(velocity_norm, direction_vec_norm) < 0
-                        if moving_away:
-                            speed = -speed
-                        # Steering: angle between velocity and direct line to target
-                        angle_off = np.arcsin(np.cross(direction_vec_norm, velocity_norm))
-                        if moving_away:
-                            tilt_angle = 23 * angle_off  # Invert steering when reversing
+                        velocity_norm = velocity_vec / (np.linalg.norm(velocity_vec) + 1e-6)
+                        catchment_radius = 50
+                        slow_radius = 240
+                        if distance < catchment_radius:
+                            speed = 0.0
                         else:
-                            tilt_angle = -23 * angle_off
+                            speed = 1 * (2 / (1 + np.exp(-8 * (distance/WARP_W - 0.2))) - 1)
+                            speed = abs(speed)
+                            if distance <= slow_radius:
+                                speed = np.clip(speed, 0, 0.75)
+                            speed = np.clip(speed, 0, 1)
+                            if speed > 0.2 and speed < 0.8:
+                                speed = 0.8
+                            moving_away = np.dot(velocity_norm, direction_vec_norm) < 0
+                            #if moving_away:
+                            #    speed = -speed
+                            # Stable signed angle using atan2
+                            angle_off = np.arctan2(
+                                direction_vec_norm[0]*velocity_norm[1] - direction_vec_norm[1]*velocity_norm[0],
+                                direction_vec_norm[0]*velocity_norm[0] + direction_vec_norm[1]*velocity_norm[1]
+                            )
+                            tilt_angle = 15 * angle_off
+                    else:
+                        speed = 0.0
+                        tilt_angle = 0.0
 
-                    # Throttle UDP sending to 100 times per second (every 0.01 seconds)
+                    # --- Draw arrows for speed and tilt angle on the ball ---
+                    if center_ball is not None:
+                        # Arrow for speed (direction_vec_norm)
+                        max_arrow_len = 80  # pixels for speed=1
+                        speed_arrow_len = int(max_arrow_len * abs(speed))
+                        # Forward direction (direction_vec_norm)
+                        dir_vec = direction_vec_norm if speed >= 0 else -direction_vec_norm
+                        end_speed = (int(center_ball[0] + dir_vec[0] * speed_arrow_len), int(center_ball[1] + dir_vec[1] * speed_arrow_len))
+                        cv2.arrowedLine(warped, center_ball, end_speed, (0, 255, 0), 4, tipLength=0.3)
+                        cv2.putText(warped, f"Speed: {speed:.2f}", (center_ball[0] + 10, center_ball[1] - 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0,255,0), 2)
+
+                        # Arrow for tilt angle (perpendicular to direction_vec_norm)
+                        max_tilt = 15.0
+                        tilt_scale = min(abs(tilt_angle) / max_tilt, 1.0)
+                        tilt_arrow_len = int(max_arrow_len * tilt_scale)
+                        # Perpendicular direction (right for positive tilt, left for negative)
+                        perp_vec = np.array([-dir_vec[1], dir_vec[0]])
+                        if tilt_angle < 0:
+                            perp_vec = -perp_vec
+                        end_tilt = (int(center_ball[0] + perp_vec[0] * tilt_arrow_len), int(center_ball[1] + perp_vec[1] * tilt_arrow_len))
+                        cv2.arrowedLine(warped, center_ball, end_tilt, (0, 0, 255), 4, tipLength=0.3)
+                        cv2.putText(warped, f"Tilt: {tilt_angle:.1f}", (center_ball[0] + 10, center_ball[1] + 40), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0,0,255), 2)
                     if 'last_udp_send_time' not in globals():
                         last_udp_send_time = 0
                     now = time.time()
@@ -313,14 +274,9 @@ if corner_centers is not None:
                         sock_send.sendto(udp_array.tobytes(), (UDP_IP_SEND, UDP_PORT))
                         print(f"[UDP] Sent speed: {speed:.2f}, tilt_angle: {tilt_angle:.2f}")
                         last_udp_send_time = now
-            else:
-                speed = 0.0
-                tilt_angle = 0.0
-        else:
-            cv2.polylines(warped, [np.int32(dst_rect)], isClosed=True, color=(0,255,0), thickness=2)
+        # Show the camera window
         cv2.imshow("Live Tracking", warped)
         if cv2.waitKey(1) & 0xFF == ord('q'):
             break
-
-cap.release()
-cv2.destroyAllWindows()
+    cap.release()
+    cv2.destroyAllWindows()
